@@ -1,0 +1,366 @@
+---
+- name: Setup gitlab-pod
+  hosts: all
+  become: true
+#  vars:
+#    tls_ca_path: "{{ inventory_dir }}/resources/tls/CA.pem"
+#    tls_crt_path: "{{ inventory_dir }}/resources/tls/crt.pem"
+#    tls_key_path: "{{ inventory_dir }}/resources/tls/key.pem"
+#    apk_token_path: "{{ inventory_dir }}/resources/ADMIN_API_TOKEN"
+#    admin_password_path: "{{ inventory_dir }}/resources/ADMIN_PASSWORD"
+#    admin_ssh_key_path: "{{ inventory_dir }}/resources/ADMIN_SSH_PUB_KEY"
+  tasks:
+#    - name: D1
+#      ansible.builtin.debug:
+#        msg: "{{ lookup('ansible.builtin.env', 'GITLAB_POD_ADMIN_PASSWORD') }}"
+#    - name: D2
+#      ansible.builtin.debug:
+#        msg: "{{ lookup('ansible.builtin.env', 'GITLAB_POD_ADMIN_API_TOKEN') }}"
+#    - name: D3
+#      ansible.builtin.debug:
+#        msg: "{{ lookup('ansible.builtin.env', 'GITLAB_POD_ADMIN_SSH_PUB_KEY') }}"
+#    - name: D4
+#      ansible.builtin.debug:
+#        msg: "{{ lookup('ansible.builtin.env', 'GITLAB_POD_TLS_CA_PATH') }}"
+#    - name: D5
+#      ansible.builtin.debug:
+#        msg: "{{ lookup('ansible.builtin.file', lookup('ansible.builtin.env', 'GITLAB_POD_TLS_CA_PATH')) }}"
+
+    - name: Create the podman secret
+      containers.podman.podman_secret:
+        name: gitlab-pod-ssl
+        state: present
+        skip_existing: false
+        data: |
+          apiVersion: v1
+          data:
+            CA.crt: {{ lookup('ansible.builtin.file', lookup('ansible.builtin.env', 'GITLAB_POD_TLS_CA_PATH')) | b64encode }}
+            gitlab.zimmnik.ru.crt: {{ lookup('ansible.builtin.file', lookup('ansible.builtin.env', 'GITLAB_POD_TLS_CRT_PATH')) | b64encode }}
+            gitlab.zimmnik.ru.key: {{ lookup('ansible.builtin.file', lookup('ansible.builtin.env', 'GITLAB_POD_TLS_KEY_PATH')) | b64encode }}
+          kind: Secret
+          metadata:
+            name: gitlab-pod-ssl
+
+    - name: Create the project directory
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      loop:
+        - /srv/prj/
+        - /srv/prj/gitll
+        - /srv/prj/gitll/quadlet
+
+    - name: Copy the k8s manifest
+      ansible.builtin.copy:
+        src: "{{ inventory_dir }}/resources/gitlab.yml"
+        dest: /srv/prj/gitll/gitlab.yml
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Copy the Quadlet files
+      ansible.builtin.copy:
+        src: "{{ inventory_dir }}/resources/quadlet/"
+        dest: /srv/prj/gitll/quadlet
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Get list of quadlet files
+      ansible.builtin.find:
+        paths: /srv/prj/gitll/quadlet
+        recurse: false
+      register: quadlet
+
+ # -debug:
+ #    #msg: "{{ [item.path] }} "
+ #    msg: "{{ item.path | basename }}"
+ #  loop: "{{ quadlet.files }}"
+
+    - name: Create the Quadlet directory
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      loop:
+        - /etc/containers
+        - /etc/containers/systemd
+
+    - name: Create symlinks of the Quadlet files
+      ansible.builtin.file:
+        src: "{{ item.path }}"
+        dest: "/etc/containers/systemd/{{ item.path | basename }}"
+        owner: root
+        group: root
+        mode: '0644'
+        state: link
+      loop: "{{ quadlet.files }}"
+
+    - name: Run daemon reload
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Start systemd service
+      ansible.builtin.systemd:
+        name: gitlab-pod
+        state: started
+
+    - name: Check gitlab-server status
+      containers.podman.podman_container_exec:
+        name: gitlab-pod-server
+        command: "curl --fail --cacert /etc/gitlab/ssl/CA.crt https://localhost/-/readiness?all=1"
+      register: gitlab_server_status
+      until: gitlab_server_status.stdout != "" and (gitlab_server_status.stdout | from_json).status == "ok"
+      retries: 24
+      delay: 10
+      changed_when: false
+
+    - name: Update hosts file
+      tags: basic
+      ansible.builtin.blockinfile:
+        dest: /etc/hosts
+        marker: "#<!-- {mark} ANSIBLE MANAGED BLOCK gitll -->"
+        block: |
+          192.168.11.1 gitlab.zimmnik.ru
+
+    - name: Check api token
+      containers.podman.podman_container_exec:
+        name: gitlab-pod-server
+        command: "curl --fail --header 'PRIVATE-TOKEN: {{ lookup('ansible.builtin.env', 'GITLAB_POD_ADMIN_API_TOKEN') }}' --cacert /etc/gitlab/ssl/CA.crt 'https://localhost/api/v4/user'"
+      register: request_status
+      changed_when: false
+      ignore_errors: true
+
+#    - name: Debug
+#      ansible.builtin.debug:
+#        var: request_status.rc
+
+    - name: Set a new admin api token
+      when: request_status.rc != 0
+      containers.podman.podman_container_exec:
+        name: gitlab-pod-server
+        command: "time gitlab-rails runner \"token = User.find_by_username('root').personal_access_tokens.create(scopes: ['api'], name: 'Automation token', expires_at: 365.days.from_now); token.set_token('{{ lookup('ansible.builtin.env', 'GITLAB_POD_ADMIN_API_TOKEN') }}'); token.save!\""
+      register: setup_new_token
+
+    - name: Check a new api token
+      when: setup_new_token is changed # noqa: no-handler
+      containers.podman.podman_container_exec:
+        name: gitlab-pod-server
+        command: "curl --fail --header 'PRIVATE-TOKEN: {{ lookup('ansible.builtin.env', 'GITLAB_POD_ADMIN_API_TOKEN') }}' --cacert /etc/gitlab/ssl/CA.crt 'https://localhost/api/v4/user'"
+      register: request_status
+      changed_when: false
+
+    - name: Get application settings
+      containers.podman.podman_container_exec:
+        name: gitlab-pod-server
+        command: "curl --fail --header 'PRIVATE-TOKEN: {{ lookup('ansible.builtin.env', 'GITLAB_POD_ADMIN_API_TOKEN') }}' --cacert /etc/gitlab/ssl/CA.crt 'https://localhost/api/v4/application/settings'"
+      register: application_settings
+      changed_when: false
+
+    - name: Enable web terminal fix
+      when: not (application_settings.stdout | from_json).allow_local_requests_from_web_hooks_and_services
+      containers.podman.podman_container_exec:
+        name: gitlab-pod-server
+        command: "curl --fail --header 'PRIVATE-TOKEN: {{ lookup('ansible.builtin.env', 'GITLAB_POD_ADMIN_API_TOKEN') }}' --cacert /etc/gitlab/ssl/CA.crt --request PUT 'https://localhost/api/v4/application/settings?allow_local_requests_from_web_hooks_and_services=true'"
+      register: request_status
+      until: request_status.rc == 0
+      retries: 3
+      delay: 10
+
+ # -name: Debug
+ #  ansible.builtin.debug:
+ #    var: (application_settings.stdout | from_json).signup_enabled
+
+    - name: Disable sign-up feature
+      when: (application_settings.stdout | from_json).signup_enabled #
+      containers.podman.podman_container_exec:
+        name: gitlab-pod-server
+        command: "curl --fail --header 'PRIVATE-TOKEN: {{ lookup('ansible.builtin.env', 'GITLAB_POD_ADMIN_API_TOKEN') }}' --cacert /etc/gitlab/ssl/CA.crt --request PUT 'https://localhost/api/v4/application/settings?signup_enabled=false'"
+      register: request_status
+      until: request_status.rc == 0
+      retries: 3
+      delay: 10
+
+ # -name: Debug
+ #  ansible.builtin.debug:
+ #    var: (application_settings.stdout | from_json).auto_devops_enabled
+
+    - name: Disable auto devops
+      when: (application_settings.stdout | from_json).auto_devops_enabled #
+      containers.podman.podman_container_exec:
+        name: gitlab-pod-server
+        command: "curl --fail --header 'PRIVATE-TOKEN: {{ lookup('ansible.builtin.env', 'GITLAB_POD_ADMIN_API_TOKEN') }}' --cacert /etc/gitlab/ssl/CA.crt --request PUT 'https://localhost/api/v4/application/settings?auto_devops_enabled=false'"
+      register: request_status
+      until: request_status.rc == 0
+      retries: 3
+      delay: 10
+
+ # -name: Get runner status
+ #  containers.podman.podman_container_exec:
+ #    name: gitlab-pod-runner
+ #    command: "gitlab-runner list"
+ #  register: runner_status
+ #  changed_when: false
+
+    - name: Check tomljson availability
+      containers.podman.podman_container_exec:
+        name: gitlab-pod-runner
+        command: "bash -c 'command -v tomljson'"
+      register: tomljson_status
+      changed_when: false
+      ignore_errors: true
+
+    - name: Install tomljson
+      when: tomljson_status.rc != 0
+      containers.podman.podman_container_exec:
+        name: gitlab-pod-runner
+        command: "bash -c 'apt-get update && apt-get -y install golang-github-pelletier-go-toml'"
+
+ # -name: Debug
+ #  ansible.builtin.debug:
+ #    var: (runner_config.stdout | from_json).runners | length
+
+    - name: Get admin ssh keys
+      containers.podman.podman_container_exec:
+        name: gitlab-pod-server
+        command: "curl --fail --header 'PRIVATE-TOKEN: {{ lookup('ansible.builtin.env', 'GITLAB_POD_ADMIN_API_TOKEN') }}' --cacert /etc/gitlab/ssl/CA.crt 'https://localhost/api/v4/user/keys'"
+      register: admin_ssh_keys
+      changed_when: false
+
+    - name: Set current admin ssh key fact
+      ansible.builtin.set_fact:
+        current_ssh_key: "{{ admin_ssh_keys.stdout | from_json | community.general.json_query(query) | regex_search('AAAA\\S*') }}"
+      vars:
+        query: "[?contains(title,'Main')].key"
+      changed_when: false
+
+    - name: Create a new admin ssh public key
+      when: current_ssh_key == ""
+      containers.podman.podman_container_exec:
+        name: gitlab-pod-server
+        command: "curl --fail --header 'Accept: application/json' --header 'Content-Type: application/json' --header 'PRIVATE-TOKEN: {{ lookup('ansible.builtin.env', 'GITLAB_POD_ADMIN_API_TOKEN') }}' --cacert /etc/gitlab/ssl/CA.crt --request POST 'https://localhost/api/v4/user/keys' -d '{\"title\":\"Main\",\"key\":\"{{ lookup('ansible.builtin.env', 'GITLAB_POD_ADMIN_SSH_PUB_KEY') }}\"}'"
+      register: admin_password_state
+
+    - name: Set target admin ssh key fact
+      ansible.builtin.set_fact:
+        target_ssh_key: "{{ lookup('ansible.builtin.env', 'GITLAB_POD_ADMIN_SSH_PUB_KEY') | regex_search('AAAA\\S*') }}"
+      changed_when: false
+      when: not admin_password_state.changed #
+
+    - name: Replace admin ssh key
+      when:
+        - current_ssh_key != ""
+        - current_ssh_key != target_ssh_key
+      block:
+        - name: Set the old admin ssh key id fact
+          ansible.builtin.set_fact:
+            ssh_key_id: "{{ admin_ssh_keys.stdout | from_json | community.general.json_query(query) }}"
+          vars:
+            query: "[?contains(title,'Main')].id"
+          changed_when: false
+
+        - name: Delete the old admin ssh public key
+          containers.podman.podman_container_exec:
+            name: gitlab-pod-server
+            command: "curl --fail --header 'PRIVATE-TOKEN: {{ lookup('ansible.builtin.env', 'GITLAB_POD_ADMIN_API_TOKEN') }}' --cacert /etc/gitlab/ssl/CA.crt --request DELETE 'https://localhost/api/v4/user/keys/{{ ssh_key_id[0] }}'"
+          register: admin_password_state
+
+        - name: Create the new admin ssh public key
+          containers.podman.podman_container_exec:
+            name: gitlab-pod-server
+            command: "curl --fail --header 'Accept: application/json' --header 'Content-Type: application/json' --header 'PRIVATE-TOKEN: {{ lookup('ansible.builtin.file', apk_token_path) }}' --cacert /etc/gitlab/ssl/CA.crt --request POST 'https://localhost/api/v4/user/keys' -d '{\"title\":\"Main\",\"key\":\"{{ lookup('ansible.builtin.env', 'GITLAB_POD_ADMIN_SSH_PUB_KEY') }}\"}'"
+          register: admin_password_state
+
+    - name: Set a new admin password
+      containers.podman.podman_container_exec:
+        name: gitlab-pod-server
+        command: "gitlab-rails runner \"user = User.find(1); np = '{{ lookup('ansible.builtin.env', 'GITLAB_POD_ADMIN_PASSWORD') }}'; user.password = np; user.password_confirmation = np; user.password_automatically_set = false; user.save!\""
+
+    - name: Get runner config
+      containers.podman.podman_container_exec:
+        name: gitlab-pod-runner
+        # command: "bash -c 'cat /etc/gitlab-runner/config.toml | tomljson | tr -d \\\\n'"
+        command: 'bash -c "cat /etc/gitlab-runner/config.toml | tomljson | tr -d \"\n\""'
+      register: runner_config
+      changed_when: false
+
+    - name: Register runner
+      when: (runner_config.stdout | from_json).runners is not defined #
+      block:
+        - name: Get runner registration token
+          containers.podman.podman_container_exec:
+            name: gitlab-pod-server
+            command: "gitlab-rails runner -e production \"puts Gitlab::CurrentSettings.current_application_settings.runners_registration_token\""
+          register: runner_registration_token
+          changed_when: false
+
+        - name: Register runner
+          containers.podman.podman_container_exec:
+            name: gitlab-pod-runner
+#            command: "gitlab-runner --debug register --non-interactive --executor docker --docker-privileged --tag-list linux,docker --docker-image alpine:latest --docker-network-mode dev --url https://gitlab.zimmnik.ru/ --registration-token {{ runner_registration_token.stdout_lines[0] }}"
+            command: "gitlab-runner --debug register --non-interactive --executor docker --docker-image alpine:latest --tag-list local,docker --url https://gitlab.zimmnik.ru --registration-token {{ runner_registration_token.stdout_lines[0] }}"
+          register: runner_registration_token
+
+    - name: Get runner config again
+      containers.podman.podman_container_exec:
+        name: gitlab-pod-runner
+        command: 'bash -c "cat /etc/gitlab-runner/config.toml | tomljson | tr -d \"\n\""'
+      register: runner_config
+      failed_when: "(runner_config.stdout | from_json).runners is not defined"
+      changed_when: false
+
+    # - name: Debug
+    #   ansible.builtin.debug:
+    #     var: runner_config
+
+    - name: Set variable with runner authentication token
+      ansible.builtin.set_fact:
+        runner_token: "{{ (runner_config.stdout | from_json).runners[0].token }}"
+      changed_when: false
+
+    - name: Set the runner config
+      community.docker.docker_container_copy_into:
+        container: gitlab-pod-runner
+        # path: "/tmp/config.toml.j2"
+        content: "{{ lookup('template', '{{ inventory_dir }}/resources/config.toml.j2') }}"
+        container_path: /etc/gitlab-runner/config.toml
+        owner_id: 0
+        group_id: 0
+        mode: '0600'
+      register: result
+
+    - name: Restart a container with a runner
+      when: result.changed # noqa: no-handler
+      containers.podman.podman_container:
+        name: gitlab-pod-runner
+        state: started
+        force_restart: true
+
+    - name: Copy the backup script
+      ansible.builtin.copy:
+        src: "{{ inventory_dir }}/resources/backup/{{ item.name }}"
+        dest: "{{ item.dest }}"
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - { name: 'gitlab-pod-backup.service', dest: '/etc/systemd/system/', mode: 'u=rw,g=r,o=r' }
+        - { name: 'gitlab-pod-restore.service', dest: '/etc/systemd/system/', mode: 'u=rw,g=r,o=r' }
+        - { name: 'gitlab-pod-backup.timer', dest: '/etc/systemd/system/', mode: 'u=rw,g=r,o=r' }
+        - { name: 'gitlab-pod-backup.sh', dest: '/usr/local/bin/', mode: 'u=rwx,g=,o=' }
+        - { name: 'gitlab-pod-restore.sh', dest: '/usr/local/bin/', mode: 'u=rwx,g=,o=' }
+
+    - name: Run daemon reload
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Start backup timer
+      ansible.builtin.systemd:
+        name: gitlab-pod-backup.timer
+        state: started
+        enabled: true

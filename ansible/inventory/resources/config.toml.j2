@@ -1,0 +1,32 @@
+concurrent = 8
+check_interval = 0
+connection_max_age = "15m0s"
+shutdown_timeout = 0
+
+[session_server]
+  advertise_address = "gitlab.zimmnik.ru:8093"
+  listen_address = "[::]:8093"
+  session_timeout = 3600
+
+[[runners]]
+  name = "gitlab"
+  url = "https://gitlab.zimmnik.ru/"
+  id = 1
+  token = "{{ runner_token }}"
+  token_obtained_at = 2024-05-17T03:45:45Z
+  token_expires_at = 0001-01-01T00:00:00Z
+  executor = "docker"
+  [runners.docker]
+    pull_policy = ["always", "if-not-present"]
+    allowed_pull_policies = ["always", "if-not-present", "never"]
+    tls_verify = false
+    image = "alpine:latest"
+    privileged = true
+    disable_entrypoint_overwrite = false
+    oom_kill_disable = false
+    disable_cache = false
+    volumes = ["/cache", "/var/run/libvirt/:/var/run/libvirt/", "/run/podman/podman.sock:/var/run/docker.sock"]
+    network_mode = "dev"
+    shm_size = 0
+    network_mtu = 0
+    services_limit = -1

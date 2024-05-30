@@ -1,0 +1,7 @@
+# docker network create --subnet=192.168.11.0/24 --gateway 192.168.11.254 --interface-name localnet --ignore localnet
+ 
+[Network]
+NetworkName=dev
+Subnet=192.168.11.0/24
+Gateway=192.168.11.254
+# PodmanArgs=--interface-name dev

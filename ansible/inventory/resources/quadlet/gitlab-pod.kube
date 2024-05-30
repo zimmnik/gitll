@@ -1,0 +1,9 @@
+# [Install]
+# WantedBy=default.target
+
+[Kube]
+Yaml=/srv/prj/gitll/gitlab.yml
+Network=podman-dev.network:ip=192.168.11.1
+SetWorkingDirectory=yaml
+# PublishPort=8000:8080
+# PublishPort=9000:9901

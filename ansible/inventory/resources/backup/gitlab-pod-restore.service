@@ -1,0 +1,7 @@
+[Unit]
+After=default.target
+Requires=default.target
+
+[Service]
+ExecStart=/usr/local/bin/gitlab-pod-restore.sh
+Type=simple

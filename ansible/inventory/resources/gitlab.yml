@@ -1,0 +1,83 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: gitlab
+  name: gitlab
+spec:
+  selector:
+    matchLabels:
+      app: gitlab
+  template:
+    metadata:
+      labels:
+        app: gitlab
+    spec:
+      hostname: gitlab.zimmnik.ru
+      containers:
+        - name: server
+          image: docker.io/gitlab/gitlab-ce:17.0.0-ce.0
+          # image: docker.io/gitlab/gitlab-ce:16.7.0-ce.0
+          # image: alpine
+          # command: ["/bin/sh"]
+          # args: ["-c", "trap : TERM INT; (while true; do sleep 1000; done) & wait"]
+          env:
+            - name: TZ
+              value: "Europe/Moscow"
+            - name: GITLAB_OMNIBUS_CONFIG
+              value: "external_url 'https://gitlab.zimmnik.ru/'; letsencrypt['enable'] = false;"
+          volumeMounts:
+            - name: server-config
+              mountPath: /etc/gitlab
+            - name: server-data
+              mountPath: /var/opt/gitlab
+            - name: server-logs
+              mountPath: /var/log/gitlab
+            - name: ssl
+              mountPath: /etc/gitlab/ssl
+          # - name: dshm
+          #   mountPath: /dev/shm
+        - name: runner
+          image: docker.io/gitlab/gitlab-runner:ubuntu-v17.0.0
+          # image: docker.io/gitlab/gitlab-runner:alpine3.18-v16.6.2
+          # image: alpine
+          # command: ["/bin/sh"]
+          # args: ["-c", "trap : TERM INT; (while true; do sleep 1000; done) & wait"]
+          securityContext:
+            seLinuxOptions:
+              type: spc_t
+            # privileged: true
+            # runAsUser: 0
+          env:
+            - name: TZ
+              value: "Europe/Moscow"
+          volumeMounts:
+            - name: runner-config
+              mountPath: /etc/gitlab-runner
+            - name: ssl
+              mountPath: /etc/gitlab-runner/certs/gitlab.zimmnik.ru.crt
+              subPath: CA.crt
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+              readOnly: false
+      volumes:
+        - name: docker-sock
+          hostPath:
+            path: /run/podman/podman.sock
+            type: File
+        - name: runner-config
+          persistentVolumeClaim:
+            claimName: gitlab-pod-runner-config
+        - name: server-config
+          persistentVolumeClaim:
+            claimName: gitlab-pod-server-config
+        - name: server-data
+          persistentVolumeClaim:
+            claimName: gitlab-pod-server-data
+        - name: server-logs
+          persistentVolumeClaim:
+            claimName: gitlab-pod-server-logs
+        - name: ssl
+          secret:
+            secretName: gitlab-pod-ssl

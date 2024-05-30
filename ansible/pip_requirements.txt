@@ -1,0 +1,6 @@
+ansible-core
+ansible-lint
+# for community.docker.docker_container_copy_into
+requests
+# for community.general.json_query
+jmespath

@@ -1,0 +1,11 @@
+[Unit]
+RefuseManualStart=no
+RefuseManualStop=no
+
+[Timer]
+OnCalendar=*-*-* 9:30:00
+WakeSystem=false
+Persistent=true
+
+[Install]
+WantedBy=timers.target

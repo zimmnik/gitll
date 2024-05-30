@@ -1,0 +1,114 @@
+---
+- name: Remove local dev environment
+  hosts: all
+  become: true
+  tasks:
+    - name: Get pod service status
+      ansible.builtin.systemd:
+        name: gitlab-pod-backup.service
+      register: service_status
+
+    - name: Stop pod service
+      when: service_status.status.ActiveState == "active"
+      ansible.builtin.systemd:
+        name: gitlab-pod-backup
+        state: stopped
+
+    - name: Remove the backup files
+      ansible.builtin.file:
+        path: "{{ item.dest }}{{ item.name }}"
+        state: absent
+      loop:
+        - { name: 'gitlab-pod-backup.service', dest: '/etc/systemd/system/', mode: 'u=rw,g=r,o=r' }
+        - { name: 'gitlab-pod-restore.service', dest: '/etc/systemd/system/', mode: 'u=rw,g=r,o=r' }
+        - { name: 'gitlab-pod-backup.timer', dest: '/etc/systemd/system/', mode: 'u=rw,g=r,o=r' }
+        - { name: 'gitlab-pod-backup.sh', dest: '/usr/local/bin/', mode: 'u=rwx,g=,o=' }
+        - { name: 'gitlab-pod-restore.sh', dest: '/usr/local/bin/', mode: 'u=rwx,g=,o=' }
+
+    - name: Update hosts file
+      tags: basic
+      ansible.builtin.blockinfile:
+        dest: /etc/hosts
+        marker: "#<!-- {mark} ANSIBLE MANAGED BLOCK gitll -->"
+        state: absent
+
+    - name: Get pod service status
+      ansible.builtin.systemd:
+        name: "gitlab-pod"
+      register: service_status
+
+#    - name: Debug
+#      ansible.builtin.debug:
+#        var: service_status
+
+    - name: Stop pod service
+      when: service_status.status.ActiveState == "active"
+      ansible.builtin.systemd:
+        name: gitlab-pod
+        state: stopped
+
+    - name: Get dev network service status
+      ansible.builtin.systemd:
+        name: podman-dev-network
+      register: service_status
+
+#    - name: Debug
+#      ansible.builtin.debug:
+#        var: service_status
+
+    - name: Stop dev network service
+      when: service_status.status.ActiveState == "active"
+      ansible.builtin.systemd:
+        name: podman-dev-network
+        state: stopped
+
+    - name: Get list of quadlet files
+      ansible.builtin.find:
+        paths: /srv/prj/gitll/quadlet
+        recurse: false
+      register: quadlet
+
+    - name: Remove symlinks of the Quadlet files
+      ansible.builtin.file:
+        path: "/etc/containers/systemd/{{ item.path | basename }}"
+        state: absent
+      loop: "{{ quadlet.files }}"
+
+    - name: Remove systemd daemon
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Remove project directory
+      ansible.builtin.file:
+        path: "/srv/prj/gitll"
+        state: absent
+
+    - name: Remove podman secret
+      containers.podman.podman_secret:
+        name: gitlab-pod-ssl
+        state: absent
+
+    - name: Remove podman network
+      containers.podman.podman_network:
+        name: dev
+        state: absent
+
+    - name: Get info about volumes
+      containers.podman.podman_volume_info:
+      register: result
+
+    - name: Remove runner volumes only
+      community.docker.docker_volume:
+        name: "{{ item }}"
+        state: absent
+      loop: "{{ result | community.general.json_query(query) }}"
+      vars:
+        query: "volumes[?starts_with(Name,'runner')].Name"
+
+    - name: Remove gitlab volumes only
+      community.docker.docker_volume:
+        name: "{{ item }}"
+        state: absent
+      loop: "{{ result | community.general.json_query(query) }}"
+      vars:
+        query: "volumes[?starts_with(Name,'gitlab')].Name"

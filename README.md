@@ -26,7 +26,7 @@ python -m venv --upgrade-deps .venv && source .venv/bin/activate
 pip install --requirement ansible/pip_requirements.txt
 export ANSIBLE_CONFIG=ansible/ansible.cfg
 ansible-galaxy install --role-file ansible/galaxy_requirements.yml
-ansible-playbook -K ansible/[install|backup|delete].yml 
+ansible-playbook -K ansible/[install|delete].yml 
 
 systemctl start gitlab-pod-backup.service && journalctl -u gitlab-pod-backup -f
 systemctl start gitlab-pod-restore.service && journalctl -u gitlab-pod-restore -f

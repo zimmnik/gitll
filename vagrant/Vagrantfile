@@ -1,0 +1,87 @@
+Vagrant.configure("2") do |config|
+
+  config.vm.define "fedora", autostart: true, primary: true do |fedora|
+    fedora.vm.box = "fedora/41-upstream"
+    fedora.vm.box_url = "https://download.fedoraproject.org/pub/fedora/linux/releases/41/Cloud/x86_64/images/Fedora-Cloud-Base-Vagrant-libvirt-41-1.4.x86_64.vagrant.libvirt.box"
+    fedora.vm.provider :libvirt do |lv|
+      lv.title = 'fedora'
+      lv.machine_virtual_size = 16
+    end
+  end
+
+  config.vm.define "oracle" do |oracle|
+    oracle.vm.box = "oraclelinux/9-btrfs"
+    oracle.vm.box_version = "9.5.652"
+    oracle.vm.box_url = "https://oracle.github.io/vagrant-projects/boxes/oraclelinux/9-btrfs.json"
+    oracle.vm.provider :libvirt do |lv|
+      lv.title = 'gitll'
+    end
+  end
+
+  config.vm.provider :libvirt do |lv|
+    lv.cpus = 4
+    lv.memory = 8192
+    lv.video_type = 'virtio'
+    lv.graphics_type = 'spice'
+    lv.default_prefix = ''
+    lv.qemu_use_session = false
+  end
+
+  config.vm.synced_folder "..", "/vagrant", type: "rsync"
+  config.vm.provision "grow up root", before: :all, type: "shell",
+    privileged: true,
+    inline: <<-SHELL
+      source /etc/os-release
+      if [[ "${PRETTY_NAME}" = "Fedora Linux 41 (Cloud Edition)" ]]; then
+        echo -e "resizepart\nFix\n4\nYes\n100%\nprint free\nquit" | parted /dev/vda ---pretend-input-tty
+        btrfs fi resize 1:max /
+        btrfs fi show /
+      fi
+    SHELL
+
+  config.vm.provision "update packages", type: "shell", inline: "dnf --assumeyes --quiet update", reboot: false
+  config.vm.provision "deploy", type: "shell",
+    privileged: true,
+    inline: <<-SHELL
+      set -e
+      set -x
+      cd /vagrant
+
+      dnf --assumeyes --quiet install podman-docker
+        podman --version
+      systemctl enable podman.socket --now
+      #systemctl enable netavark-dhcp-proxy.service --now
+      #podman network create -d macvlan -o parent=eth0 cHOME
+
+      rm -r .venv || true
+      source /etc/os-release
+      case "${PRETTY_NAME}" in
+      "Fedora Linux 41 (Cloud Edition)")
+        dnf --assumeyes --quiet install git python3-pip python3-libdnf5
+        python -m venv --upgrade-deps .venv && source .venv/bin/activate
+        ;;
+      "Oracle Linux Server 9.5")
+        dnf --assumeyes --quiet install python3.12-pip python3.12-pip-wheel git
+        python3.12 -m venv --upgrade-deps .venv && source .venv/bin/activate
+        ;;
+      *)
+        echo "Error, unsupported os"
+        exit 1
+        ;;
+      esac
+        python --version
+
+      pip install --requirement ansible/pip_requirements.txt
+        pip list --format freeze
+        ansible-lint --version
+
+      export ANSIBLE_CONFIG=ansible/ansible.cfg
+      ansible-galaxy install --role-file ansible/galaxy_requirements.yml
+        ansible-galaxy collection list --format yaml
+        ansible-lint -c ansible/.ansible-lint ansible/
+        ansible-inventory --graph --vars
+      source .env
+
+      time ansible-playbook -K ansible/install.yml
+    SHELL
+end

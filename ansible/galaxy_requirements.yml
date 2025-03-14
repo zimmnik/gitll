@@ -1,6 +1,10 @@
 collections:
   # for callback plugin 'profile_tasks'
   - name: ansible.posix
+    version: 2.0.0
   - name: containers.podman
+    version: 1.16.3
   - name: community.docker
+    version: 4.5.1
   - name: community.general
+    version: 10.4.0

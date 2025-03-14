@@ -3,7 +3,9 @@
 
 [Kube]
 Yaml=/srv/prj/gitll/gitlab.yml
-Network=podman-dev.network:ip=192.168.11.1
 SetWorkingDirectory=yaml
+Network=podman-dev.network:ip=192.168.11.1
+#Network=cHOME
+#PodmanArgs=--mac-address=92:d1:c6:9b:29:00
 # PublishPort=8000:8080
 # PublishPort=9000:9901

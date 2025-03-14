@@ -101,14 +101,14 @@
       community.docker.docker_volume:
         name: "{{ item }}"
         state: absent
-      loop: "{{ result | community.general.json_query(query) }}"
+      loop: "{{ result | community.general.json_query(runner_volumes_list_query) }}"
       vars:
-        query: "volumes[?starts_with(Name,'runner')].Name"
+        runner_volumes_list_query: "volumes[?starts_with(Name,'runner')].Name"
 
     - name: Remove gitlab volumes only
       community.docker.docker_volume:
         name: "{{ item }}"
         state: absent
-      loop: "{{ result | community.general.json_query(query) }}"
+      loop: "{{ result | community.general.json_query(gitlab_volumes_list_query) }}"
       vars:
-        query: "volumes[?starts_with(Name,'gitlab')].Name"
+        gitlab_volumes_list_query: "volumes[?starts_with(Name,'gitlab')].Name"

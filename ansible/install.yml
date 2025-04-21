@@ -105,6 +105,11 @@
       ansible.builtin.systemd:
         daemon_reload: true
 
+    - name: Pull image
+      containers.podman.podman_image:
+        name: docker.io/gitlab/gitlab-ce
+        tag: 17.0.0-ce.0
+
     - name: Start systemd service
       ansible.builtin.systemd:
         name: gitlab-pod
@@ -116,7 +121,7 @@
         command: "curl --fail --no-progress-meter --cacert /etc/gitlab/ssl/CA.crt https://localhost/-/readiness?all=1"
       register: gitlab_server_status
       until: gitlab_server_status.stdout != "" and (gitlab_server_status.stdout | from_json).status == "ok"
-      retries: 24
+      retries: 32
       delay: 10
       changed_when: false
 
